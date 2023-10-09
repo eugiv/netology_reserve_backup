@@ -2,6 +2,7 @@ import requests
 import json
 from pprint import pprint
 
+
 class VK:
     def __init__(self, access_token, user_id, version='5.154'):
         self.token = access_token
@@ -55,16 +56,40 @@ class VK:
         pprint(files_info)
 
 
+class YA:
+    def __init__(self, access_token):
+        self.token = access_token
+        self.api_base_url = "https://cloud-api.yandex.net"
+        self.base_headers = {"Authorization": access_token}
 
+    def ya_create_folder(self):
+        url = f'{self.api_base_url}/v1/disk/resources'
+        folder_name = "VK_photos"
+        params = {"path": f"{folder_name}"}
+        requests.put(url, headers=self.base_headers, params=params)
+        return folder_name
 
+    def ya_qet_load_link(self):
+        url = f'{self.api_base_url}/v1/disk/resources/upload'
+        params = {"path": f"{self.ya_create_folder()}/requirements.txt"}
+        url_for_load = requests.get(url, headers=self.base_headers, params=params).json()
+        return url_for_load.get("href", "")
 
+    def ya_load_photos(self):
+        with open("requirements.txt", "rb") as f:
+            requests.put(self.ya_qet_load_link(), files={"file": f})
 
 
 with open('tokens.txt') as f:
     file = json.loads(f.read())
-    access_token = file["token"]
+    access_token_vk = file["token_vk"]
     user_id = file["access_id"]
+    access_token_ya = file["token_ya"]
 
-vk = VK(access_token, user_id)
-vk.photos_info()
+vk = VK(access_token_vk, user_id)
+# vk.photos_info()
 # vk.users_info()
+
+ya = YA(access_token_ya)
+ya.ya_load_photos()
+
