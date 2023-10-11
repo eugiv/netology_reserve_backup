@@ -11,9 +11,9 @@ FOLDER_NAME = "VK_photos"
 
 
 class VK:
-    def __init__(self, access_token, user_id, version='5.154'):
+    def __init__(self, access_token, vk_user_id, version='5.154'):
         self.token = access_token
-        self.id = user_id
+        self.id = vk_user_id
         self.version = version
         self.base_params = {'access_token': self.token, 'v': self.version}
         self.api_base_url = 'https://api.vk.com'
@@ -26,21 +26,14 @@ class VK:
         response = requests.get(url, params={**self.base_params, **params})
         return response.json()
 
-    def album_ids(self):
-        url = f'{self.api_base_url}/method/photos.getAlbums'
-        params = {'owner_id': self.id,
-                  "album_id": "wall"}
-        response = requests.get(url, params={**self.base_params, **params})
-        print(response.json())
-
-    def photos_raw_data(self, album_id="wall"):
+    def photos_raw_data(self, album_id="wall", photos_count=5):
         url = f'{self.api_base_url}/method/photos.get'
         params = {'owner_id': self.id,
                   "album_id": album_id,
-                  "extended": True}
+                  "extended": True,
+                  "count": photos_count}
         response = requests.get(url, params={**self.base_params, **params})
         photos = response.json()
-        print(photos)
         for key in tqdm(photos["response"]["items"], desc="1. Creating raw photos metadata"):
             time.sleep(0.05)
             max_photo_size = max(key["sizes"], key=lambda x: x.get("height", 0) + x.get("width", 0))
@@ -59,7 +52,7 @@ class VK:
         dates_list = [x["upload_date"] for x in photos_data]
         mutual_list_cnt = list(zip(likes_list, dates_list))
 
-        for each_dict, mut in zip(tqdm(photos_data, desc="2. Making metadata json"), mutual_list_cnt):
+        for each_dict, mut in zip(tqdm(photos_data, desc="2. Saving metadata json"), mutual_list_cnt):
             time.sleep(0.05)
             likes_counter = likes_list.count(each_dict["likes"])
             dates_counter = dates_list.count(each_dict["upload_date"])
@@ -73,10 +66,10 @@ class VK:
                 each_dict["file_name"] = f'{each_dict["likes"]}_{each_dict["upload_date"]}_{each_dict["photo_id"]}.jpg'
 
             self.files_info.append({"file_name": each_dict["file_name"],
-                               "size": each_dict["size"]})
+                                    "size": each_dict["size"]})
 
-        with open("vk_photofiles_metadata.json", "w") as f:
-            json.dump(self.files_info, f, indent=3)
+        with open("vk_photo_files_metadata.json", "w") as vk_file:
+            json.dump(self.files_info, vk_file, indent=3)
 
     def photos_links(self):
         photos_url = self.photos_raw_data_list
@@ -85,10 +78,12 @@ class VK:
 
 
 class YA:
-    def __init__(self, access_token):
+    def __init__(self, access_token, vk_files_info, vk_photos_links):
         self.token = access_token
         self.api_base_url = "https://cloud-api.yandex.net"
         self.base_headers = {"Authorization": access_token}
+        self.vk_files_info = vk_files_info
+        self.vk_photos_links = vk_photos_links
 
     def ya_create_folder(self):
         url = f'{self.api_base_url}/v1/disk/resources'
@@ -104,7 +99,7 @@ class YA:
         url = f'{self.api_base_url}/v1/disk/resources/upload'
 
         links_ya_upload = []
-        for photo_name in tqdm(vk.files_info, desc="3. Performing links for upload to Yandex Disc"):
+        for photo_name in tqdm(self.vk_files_info, desc="3. Performing links for upload to Yandex Disc"):
             time.sleep(0.05)
             photo_name = photo_name.get("file_name", "")
             params = {"path": f"{self.ya_create_folder()}/{photo_name}",
@@ -123,7 +118,7 @@ class YA:
 
     def ya_load_photos(self):
         for link_ya, link_vk in zip(self.ya_qet_load_link(),
-                                    tqdm(vk.photos_links(), desc="4. Uploading photos to a Yandex Disc folder")):
+                                    tqdm(self.vk_photos_links, desc="4. Uploading photos to a Yandex Disc folder")):
             time.sleep(0.05)
             if link_ya:
                 vk_files = requests.get(link_vk).content
@@ -131,10 +126,12 @@ class YA:
 
 
 class GGL:
-    def __init__(self):
+    def __init__(self, vk_files_info, vk_photos_links):
         self.gauth = GoogleAuth()
         self.gauth.LocalWebserverAuth()
         self.drive = GoogleDrive(self.gauth)
+        self.vk_files_info = vk_files_info
+        self.vk_photos_links = vk_photos_links
 
     def ggl_create_folder(self):
         folders_on_drive = self.drive.ListFile({'q': f"title='{FOLDER_NAME}' "
@@ -151,8 +148,8 @@ class GGL:
 
     def ggl_load_photos(self):
         folder_id = self.ggl_create_folder()
-        for file_name, link_vk in zip(tqdm(vk.files_info, desc="5. Uploading photos to a Google Drive folder"),
-                                      vk.photos_links()):
+        for file_name, link_vk in zip(tqdm(self.vk_files_info, desc="5. Uploading photos to a Google Drive folder"),
+                                      self.vk_photos_links):
             time.sleep(0.05)
             photo_on_drive = self.drive.ListFile({'q': f"title='{file_name.get('file_name', '')}' "
                                                        f"and '{folder_id}' in parents"}).GetList()
@@ -174,12 +171,11 @@ with open('tokens.txt') as f:
     access_token_yan = file["token_ya"]
 
 
-vk = VK(access_token_vkt, user_id)
-vk.album_ids()
-# vk.photos_raw_data()
-
-# ya = YA(access_token_yan)
+# vk = VK(access_token_vkt, user_id)
+# vk.photos_file()
+#
+# ya = YA(access_token_yan, vk.files_info, vk.photos_links())
 # ya.ya_load_photos()
 #
-# ggl = GGL()
+# ggl = GGL(vk.files_info, vk.photos_links())
 # ggl.ggl_load_photos()
