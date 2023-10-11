@@ -1,3 +1,4 @@
+from io import BytesIO
 import requests
 import json
 from datetime import datetime
@@ -5,7 +6,8 @@ from tqdm import tqdm
 import time
 from pydrive.auth import GoogleAuth
 from pydrive.drive import GoogleDrive
-from googleapiclient.http import MediaFileUpload
+
+FOLDER_NAME = "VK_photos"
 
 
 class VK:
@@ -14,8 +16,9 @@ class VK:
         self.id = user_id
         self.version = version
         self.base_params = {'access_token': self.token, 'v': self.version}
-        self.api_base_url = "https://api.vk.com"
+        self.api_base_url = 'https://api.vk.com'
         self.photos_raw_data_list = []
+        self.files_info = []
 
     def users_info(self):
         url = f'{self.api_base_url}/method/users.get'
@@ -23,14 +26,21 @@ class VK:
         response = requests.get(url, params={**self.base_params, **params})
         return response.json()
 
-    def photos_raw_data(self):
+    def album_ids(self):
+        url = f'{self.api_base_url}/method/photos.getAlbums'
+        params = {'owner_id': self.id,
+                  "album_id": "wall"}
+        response = requests.get(url, params={**self.base_params, **params})
+        print(response.json())
+
+    def photos_raw_data(self, album_id="wall"):
         url = f'{self.api_base_url}/method/photos.get'
         params = {'owner_id': self.id,
-                  "album_id": "wall",
+                  "album_id": album_id,
                   "extended": True}
         response = requests.get(url, params={**self.base_params, **params})
         photos = response.json()
-
+        print(photos)
         for key in tqdm(photos["response"]["items"], desc="1. Creating raw photos metadata"):
             time.sleep(0.05)
             max_photo_size = max(key["sizes"], key=lambda x: x.get("height", 0) + x.get("width", 0))
@@ -49,7 +59,6 @@ class VK:
         dates_list = [x["upload_date"] for x in photos_data]
         mutual_list_cnt = list(zip(likes_list, dates_list))
 
-        files_info = []
         for each_dict, mut in zip(tqdm(photos_data, desc="2. Making metadata json"), mutual_list_cnt):
             time.sleep(0.05)
             likes_counter = likes_list.count(each_dict["likes"])
@@ -63,13 +72,11 @@ class VK:
             else:
                 each_dict["file_name"] = f'{each_dict["likes"]}_{each_dict["upload_date"]}_{each_dict["photo_id"]}.jpg'
 
-            files_info.append({"file_name": each_dict["file_name"],
+            self.files_info.append({"file_name": each_dict["file_name"],
                                "size": each_dict["size"]})
 
         with open("vk_photofiles_metadata.json", "w") as f:
-            json.dump(files_info, f, indent=2)
-
-        return files_info
+            json.dump(self.files_info, f, indent=3)
 
     def photos_links(self):
         photos_url = self.photos_raw_data_list
@@ -85,22 +92,32 @@ class YA:
 
     def ya_create_folder(self):
         url = f'{self.api_base_url}/v1/disk/resources'
-        folder_name = "VK_photos"
-        params = {"path": f"{folder_name}"}
-        requests.put(url, headers=self.base_headers, params=params)
-        return folder_name
+        params = {"path": f"{FOLDER_NAME}"}
+        response = requests.get(url, headers=self.base_headers, params=params)
+        if response.status_code == 200:
+            return FOLDER_NAME
+        else:
+            requests.put(url, headers=self.base_headers, params=params)
+            return FOLDER_NAME
 
     def ya_qet_load_link(self):
         url = f'{self.api_base_url}/v1/disk/resources/upload'
 
         links_ya_upload = []
-        for photo_name in tqdm(vk.photos_file(), desc="3. Performing links for upload to Yandex and Google"):
+        for photo_name in tqdm(vk.files_info, desc="3. Performing links for upload to Yandex Disc"):
             time.sleep(0.05)
             photo_name = photo_name.get("file_name", "")
             params = {"path": f"{self.ya_create_folder()}/{photo_name}",
-                      "overwrite": True}
-            url_for_load = requests.get(url, headers=self.base_headers, params=params).json()
-            links_ya_upload.append(url_for_load.get("href", ""))
+                      "overwrite": False}
+
+            url_exist = f'{self.api_base_url}/v1/disk/resources/download?path={params["path"]}'
+            response = requests.head(url_exist, headers=self.base_headers, params=params)
+
+            if response.status_code == 200:
+                pass
+            else:
+                url_for_load = requests.get(url, headers=self.base_headers, params=params).json()
+                links_ya_upload.append(url_for_load.get("href", ""))
 
         return links_ya_upload
 
@@ -108,8 +125,9 @@ class YA:
         for link_ya, link_vk in zip(self.ya_qet_load_link(),
                                     tqdm(vk.photos_links(), desc="4. Uploading photos to a Yandex Disc folder")):
             time.sleep(0.05)
-            vk_files = requests.get(link_vk).content
-            requests.put(link_ya, files={"file": vk_files})
+            if link_ya:
+                vk_files = requests.get(link_vk).content
+                requests.put(link_ya, files={"file": vk_files})
 
 
 class GGL:
@@ -119,19 +137,34 @@ class GGL:
         self.drive = GoogleDrive(self.gauth)
 
     def ggl_create_folder(self):
-        params = {"title": "VK_Photos",
-                  "mimeType": "application/vnd.google-apps.folder"}
-        folder = self.drive.CreateFile(params)
-        folder.Upload()
-        return folder.get("id")
+        folders_on_drive = self.drive.ListFile({'q': f"title='{FOLDER_NAME}' "
+                                                     f"and mimeType='application/vnd.google-apps.folder'"}).GetList()
+
+        if folders_on_drive:
+            return folders_on_drive[0]["id"]
+        else:
+            params = {"title": f"{FOLDER_NAME}",
+                      "mimeType": "application/vnd.google-apps.folder"}
+            folder = self.drive.CreateFile(params)
+            folder.Upload()
+            return folder.get("id")
 
     def ggl_load_photos(self):
-        for link_vk in tqdm(vk.photos_links(), desc="4. Uploading photos to a Google Drive folder"):
+        folder_id = self.ggl_create_folder()
+        for file_name, link_vk in zip(tqdm(vk.files_info, desc="5. Uploading photos to a Google Drive folder"),
+                                      vk.photos_links()):
             time.sleep(0.05)
-            params = {"name": f"{requests.get(link_vk).content}",
-                      "parents": [self.ggl_create_folder()]}
-            MediaFileUpload(f"{requests.get(link_vk).content}", mimetype='image/jpeg', resumable=True)
+            photo_on_drive = self.drive.ListFile({'q': f"title='{file_name.get('file_name', '')}' "
+                                                       f"and '{folder_id}' in parents"}).GetList()
 
+            if photo_on_drive:
+                pass
+            else:
+                params = {"title": file_name.get('file_name', ''),
+                          "parents": [{"id": folder_id}]}
+                files = self.drive.CreateFile(params)
+                files.content = BytesIO(requests.get(link_vk).content)
+                files.Upload()
 
 
 with open('tokens.txt') as f:
@@ -142,12 +175,11 @@ with open('tokens.txt') as f:
 
 
 vk = VK(access_token_vkt, user_id)
-# vk.photos_links()
-vk.photos_raw_data()
-vk.photos_file()
+vk.album_ids()
+# vk.photos_raw_data()
 
-ya = YA(access_token_yan)
+# ya = YA(access_token_yan)
 # ya.ya_load_photos()
-
-ggl = GGL()
-ggl.ggl_load_photos()
+#
+# ggl = GGL()
+# ggl.ggl_load_photos()
